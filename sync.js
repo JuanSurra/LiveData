@@ -4,52 +4,58 @@ async function sync() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
   
-  // Esta ruta contiene el resumen de los últimos datos procesados desde los CSV
-  const url = 'https://or.ammonit.com/api/PMXG/loggers-list/';
+  // Ruta directa al dispositivo D223245
+  const url = 'https://or.ammonit.com/api/PMXG/D223245/';
 
-  console.log("Buscando el último dato estadístico procesado...");
+  console.log("Consultando datos del dispositivo directamente...");
 
   try {
     const res = await fetch(url, {
       headers: { 'Authorization': `Token ${token}` }
     });
 
-    const loggers = await res.json();
-    const myLogger = loggers.find(l => l.serial === 'D223245');
+    const device = await res.json();
+    
+    // Imprimimos las llaves para ver dónde están los datos de los CSV
+    console.log("--- ESTRUCTURA DETECTADA ---");
+    console.log("Llaves del JSON:", Object.keys(device));
+    
+    // Buscamos los datos en last_data (donde caen los CSV procesados)
+    const data = device.last_data;
 
-    if (!myLogger || !myLogger.last_data) {
-      console.log("AVISO: AmmonitOR aún no ha procesado el primer archivo CSV.");
-      console.log("Asegúrate de que en el Meteo-40 -> Calendario -> AmmonitOR diga 'Success'.");
+    if (!data) {
+      console.log("AVISO: AmmonitOR tiene los archivos pero aún no ha extraído los datos a la base de datos.");
+      console.log("Espera 5 minutos o verifica en AmmonitOR -> Data Tables si hay números.");
       return;
     }
 
-    const data = myLogger.last_data;
+    console.log("¡DATO ENCONTRADO!");
+    console.log("Fecha del dato:", data.timestamp);
     const channels = data.channels || {};
-    
-    console.log("¡Dato estadístico encontrado! Fecha:", data.timestamp);
+    console.log("Canales disponibles:", Object.keys(channels));
 
-    // Función para extraer valores (Viento, Temp, etc.)
-    const getVal = (tags) => {
+    // Función para extraer valores buscando por nombres comunes
+    const extraer = (tags) => {
       const key = Object.keys(channels).find(k => tags.some(t => k.toLowerCase().includes(t.toLowerCase())));
       return key ? channels[key].value : null;
     };
 
-    // 3. INSERTAR EN POSTGRESQL (SUPABASE)
+    // 2. INSERTAR EN SUPABASE
     const { error } = await supabase.from('telemetria_live').insert([{
       timestamp: data.timestamp,
       station_name: "Estación Tecnovex PMXG",
       location: "Patagonia, AR",
-      wind_speed: getVal(['wind speed', 'viento', 'ws']),
-      wind_dir_value: getVal(['wind direction', 'dirección', 'wd']),
-      wind_dir_label: getVal(['wind direction', 'wd'])?.label || "N/A",
-      temperature: getVal(['temperature', 'temp', 't']),
-      humidity: getVal(['humidity', 'hum', 'h']),
-      pressure: getVal(['pressure', 'presion', 'p']),
-      precipitation: getVal(['precipitation', 'lluvia', 'rain'])
+      wind_speed: extraer(['wind speed', 'viento', 'ws', 'speed']),
+      wind_dir_value: extraer(['wind direction', 'dirección', 'wd', 'dir']),
+      wind_dir_label: extraer(['wind direction', 'wd'])?.label || "N/A",
+      temperature: extraer(['temperature', 'temp', 't']),
+      humidity: extraer(['humidity', 'hum', 'h']),
+      pressure: extraer(['pressure', 'presion', 'p']),
+      precipitation: extraer(['precipitation', 'lluvia', 'rain'])
     }]);
 
     if (error) throw error;
-    console.log("¡ÉXITO! El dato estadístico ya está en tu base de datos.");
+    console.log("¡ÉXITO! Supabase actualizado con datos del CSV.");
 
   } catch (err) {
     console.error("ERROR:", err.message);
