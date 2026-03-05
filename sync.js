@@ -4,68 +4,65 @@ async function sync() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
   
-  // Esta ruta pide las últimas mediciones de la tabla de datos (los CSV ya procesados)
-  const url = 'https://or.ammonit.com/api/PMXG/D223245/data/';
+  // RUTA OFICIAL DEL MANUAL DE PYTHON
+  const url = 'https://or.ammonit.com/api/PMXG/loggers-list/';
 
-  console.log("Consultando la tabla de datos procesados...");
+  console.log("Consultando la base de datos de AmmonitOR...");
 
   try {
     const res = await fetch(url, {
       headers: { 'Authorization': `Token ${token}` }
     });
 
-    if (!res.ok) {
-      console.log(`La ruta /data/ no respondió (Error ${res.status}). Probando ruta /values/...`);
-      // Plan B: Algunas versiones usan /values/ en lugar de /data/
-      const resAlt = await fetch('https://or.ammonit.com/api/PMXG/D223245/values/', {
-        headers: { 'Authorization': `Token ${token}` }
-      });
-      var data = await resAlt.json();
-    } else {
-      var data = await res.json();
-    }
+    if (!res.ok) throw new Error(`Error ${res.status}: No se pudo acceder a la API.`);
 
-    // 'data' ahora debería ser una LISTA de mediciones
-    const rows = Array.isArray(data) ? data : (data.results || []);
+    const loggers = await res.json();
+    const myLogger = loggers.find(l => l.serial === 'D223245');
 
-    if (rows.length === 0) {
-      console.log("AVISO: La tabla de datos está vacía en AmmonitOR.");
-      console.log("Verifica en la web de AmmonitOR -> Data Tables si realmente hay números.");
+    if (!myLogger || !myLogger.last_data) {
+      console.log("AVISO: AmmonitOR no tiene datos procesados para el equipo D223245.");
+      console.log("Esto pasa porque los archivos CSV en AmmonitOR están marcados como 'Erroneous'.");
+      console.log("Respuesta del servidor:", JSON.stringify(myLogger));
       return;
     }
 
-    console.log(`¡Se encontraron ${rows.length} filas! Sincronizando...`);
+    const data = myLogger.last_data;
+    const channels = data.channels || {};
+    
+    console.log("¡DATO ENCONTRADO! Fecha:", data.timestamp);
 
-    // Función para buscar sensores
-    const getVal = (channels, tags) => {
-      const key = Object.keys(channels || {}).find(k => tags.some(t => k.toLowerCase().includes(t.toLowerCase())));
+    // Buscador flexible de sensores
+    const getVal = (tags) => {
+      const key = Object.keys(channels).find(k => tags.some(t => k.toLowerCase().includes(t.toLowerCase())));
       return key ? channels[key].value : null;
     };
 
-    // Preparamos las filas para Supabase
-    const rowsToInsert = rows.map(row => ({
-      timestamp: row.timestamp,
+    // 2. PREPARAR EL JSON PARA POSTGRESQL (CUMPLIENDO EL PDF)
+    const insertData = {
+      timestamp: data.timestamp,
       station_name: "Estación Tecnovex PMXG",
       location: "Patagonia, AR",
-      wind_speed: getVal(row.channels, ['wind speed', 'viento', 'ws']),
-      temperature: getVal(row.channels, ['temperature', 'temp', 't']),
-      humidity: getVal(row.channels, ['humidity', 'hum', 'h']),
-      pressure: getVal(row.channels, ['pressure', 'presion', 'p']),
-      precipitation: getVal(row.channels, ['precipitation', 'lluvia', 'rain']),
-      wind_dir_label: row.channels?.['Wind Direction']?.label || "N/A"
-    }));
+      wind_speed: getVal(['wind speed', 'viento', 'ws']),
+      wind_dir_value: getVal(['wind direction', 'dirección', 'wd']),
+      wind_dir_label: channels['Wind Direction']?.label || "N/A",
+      temperature: getVal(['temperature', 'temp', 't']),
+      humidity: getVal(['humidity', 'hum', 'h']),
+      pressure: getVal(['pressure', 'presion', 'p']),
+      precipitation: getVal(['precipitation', 'lluvia', 'rain'])
+    };
 
-    // Usamos 'upsert' para que si el dato ya existe, no se duplique
+    // 3. ENVIAR A SUPABASE (Usamos upsert para evitar duplicados si el dato ya existe)
     const { error } = await supabase
       .from('telemetria_live')
-      .upsert(rowsToInsert, { onConflict: 'timestamp' });
+      .upsert([insertData], { onConflict: 'timestamp' });
 
     if (error) throw error;
 
-    console.log("¡ÉXITO! Se han cargado los datos históricos y actuales en Supabase.");
+    console.log("¡ÉXITO! El dato se ha sincronizado con Supabase.");
 
   } catch (err) {
-    console.error("ERROR:", err.message);
+    console.error("ERROR:");
+    console.error(err.message);
     process.exit(1);
   }
 }
