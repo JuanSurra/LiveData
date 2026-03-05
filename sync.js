@@ -4,75 +4,68 @@ async function sync() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
 
-  // Probaremos las dos variaciones de URL más comunes de Ammonit
-  const urls = [
-    'https://or.ammonit.com/api/v1/projects/',
-    'https://www.ammonit-or.com/api/v1/projects/'
+  // Las 4 rutas más probables según el manual y tu configuración
+  const targets = [
+    'https://or.ammonit.com/api/v1/projects/PMXG/last-data/',
+    'https://or.ammonit.com/api/projects/PMXG/last-data/',
+    'https://or.ammonit.com/api/v1/devices/D223245/last-data/',
+    'https://or.ammonit.com/api/devices/D223245/last-data/'
   ];
 
-  console.log("--- INICIANDO DIAGNÓSTICO DE CONEXIÓN ---");
+  console.log("--- BUSCANDO ENDPOINT VÁLIDO ---");
 
-  for (let baseUrl of urls) {
-    console.log(`\nProbando base: ${baseUrl}`);
+  for (let url of targets) {
+    console.log(`\nProbando: ${url}`);
     try {
-      const res = await fetch(baseUrl, {
-        headers: { 'Authorization': `Token ${token}` }
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { 
+          'Authorization': `Token ${token}`,
+          'Accept': 'application/json'
+        }
       });
 
-      const contentType = res.headers.get("content-type");
-      const text = await res.text();
+      console.log(`Respuesta: ${res.status} ${res.statusText}`);
 
-      if (res.ok && contentType.includes("application/json")) {
-        const projects = JSON.parse(text);
-        const project = projects.find(p => p.key === 'PMXG');
+      if (res.ok) {
+        const data = await res.json();
+        console.log("¡ÉXITO! Datos recibidos correctamente.");
         
-        if (project) {
-          console.log(`¡ÉXITO! Proyecto PMXG encontrado con ID: ${project.id}`);
-          
-          // Ahora pedimos los datos reales
-          const dataRes = await fetch(`${baseUrl}${project.id}/last-data/`, {
-            headers: { 'Authorization': `Token ${token}` }
-          });
-          const weatherData = await dataRes.json();
-          
-          console.log("Datos recibidos. Guardando en Supabase...");
-          await saveToSupabase(supabase, weatherData);
-          return; // Terminamos con éxito
-        }
-      } else {
-        console.log(`Respuesta no válida de ${baseUrl}`);
-        console.log(`Status: ${res.status}`);
-        console.log(`¿Es HTML?: ${text.includes('<html')}`);
-        // Si es HTML, mostramos solo el título para no llenar el log
-        if (text.includes('<title>')) {
-            console.log("Título de la página recibida:", text.match(/<title>(.*?)<\/title>/)[1]);
-        }
+        // Si tenemos datos, los guardamos en Supabase
+        await saveToSupabase(supabase, data);
+        return; // Salimos del bucle porque ya funcionó
+      } else if (res.status === 403) {
+        console.log("ERROR 403: El Token es válido pero no tienes permiso. Revisa '3rd party apps' en AmmonitOR.");
       }
     } catch (err) {
-      console.log(`Error conectando a ${baseUrl}: ${err.message}`);
+      console.log(`Error de red en esta URL: ${err.message}`);
     }
   }
-  
-  console.log("\n--- NO SE PUDO CONECTAR ---");
-  console.log("Revisa que el Token sea correcto y que la App tenga acceso en AmmonitOR.");
+
+  console.log("\n--- NINGUNA RUTA FUNCIONÓ ---");
   process.exit(1);
 }
 
 async function saveToSupabase(supabase, data) {
-  const { error } = await supabase.from('telemetria_live').insert([{
+  // Intentamos extraer los valores, manejando posibles nombres de canales
+  const channels = data.channels || {};
+  
+  const insertData = {
     timestamp: data.timestamp,
     station_name: "Estación Tecnovex PMXG",
     location: "Patagonia, AR",
-    wind_speed: data.channels['Wind Speed']?.value || null,
-    wind_dir_value: data.channels['Wind Direction']?.value || null,
-    wind_dir_label: data.channels['Wind Direction']?.label || "N/A",
-    temperature: data.channels['Temperature']?.value || null,
-    humidity: data.channels['Humidity']?.value || null,
-    pressure: data.channels['Pressure']?.value || null,
-    precipitation: data.channels['Precipitation']?.value || null
-  }]);
+    wind_speed: (channels['Wind Speed'] || channels['viento'] || {}).value || null,
+    wind_dir_value: (channels['Wind Direction'] || channels['direccion'] || {}).value || null,
+    wind_dir_label: (channels['Wind Direction'] || {}).label || "N/A",
+    temperature: (channels['Temperature'] || channels['temp'] || {}).value || null,
+    humidity: (channels['Humidity'] || channels['hum'] || {}).value || null,
+    pressure: (channels['Pressure'] || channels['presion'] || {}).value || null,
+    precipitation: (channels['Precipitation'] || channels['lluvia'] || {}).value || null
+  };
+
+  const { error } = await supabase.from('telemetria_live').insert([insertData]);
   if (error) throw error;
-  console.log("¡Dato guardado exitosamente!");
+  console.log(`Dato de las ${data.timestamp} guardado en Supabase.`);
 }
 
 sync();
