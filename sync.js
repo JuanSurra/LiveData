@@ -8,7 +8,10 @@ async function sync() {
   // Probaremos la ruta de metadatos del dispositivo que suele traer el último dato
   const url = 'https://or.ammonit.com/api/PMXG/D223245/';
 
-  console.log(`Consultando AmmonitOR en: ${url}`);
+const data = await res.json();
+    console.log("--- LISTA DE SENSORES DETECTADOS ---");
+    console.log(Object.keys(data.last_data?.channels || data.channels || {}));
+    console.log("------------------------------------");
 
   try {
     const res = await fetch(url, {
