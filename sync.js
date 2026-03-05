@@ -4,10 +4,10 @@ async function sync() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
   
-  // Esta es la URL que suele contener las mediciones en vivo
-  const url = 'https://or.ammonit.com/api/PMXG/D223245/last-data/';
+  // Usamos la ruta oficial del manual: loggers-list
+  const url = 'https://or.ammonit.com/api/PMXG/loggers-list/';
 
-  console.log("Consultando mediciones en vivo...");
+  console.log("Consultando lista de equipos en proyecto PMXG...");
 
   try {
     const res = await fetch(url, {
@@ -15,27 +15,33 @@ async function sync() {
     });
 
     if (!res.ok) {
-      throw new Error(`Error ${res.status}: No se pudo acceder a las mediciones.`);
+      throw new Error(`Error ${res.status}: No se pudo obtener la lista de equipos.`);
     }
 
-    const data = await res.json();
+    const loggers = await res.json();
     
-    // Imprimimos para confirmar qué sensores hay
-    console.log("--- DATOS RECIBIDOS ---");
-    console.log("Fecha del dato:", data.timestamp);
-    console.log("Sensores encontrados:", Object.keys(data.channels || {}));
-    
-    if (!data.timestamp) {
-      console.log("El JSON no tiene timestamp. Contenido recibido:", JSON.stringify(data));
+    // Buscamos tu equipo D223245 en la lista
+    const myLogger = loggers.find(l => l.serial === 'D223245');
+
+    if (!myLogger) {
+      console.log("No se encontró el equipo D223245 en la lista. Equipos disponibles:", loggers.map(l => l.serial));
       return;
     }
 
-    const channels = data.channels || {};
+    // En loggers-list, los datos suelen venir en 'last_data' o directamente en el objeto
+    const measurements = myLogger.last_data || myLogger;
+    
+    if (!measurements.timestamp) {
+      console.log("El equipo no tiene mediciones recientes. Contenido del equipo:", JSON.stringify(myLogger).substring(0, 200));
+      return;
+    }
+
+    console.log("¡Datos encontrados! Fecha:", measurements.timestamp);
+    const channels = measurements.channels || {};
 
     // GUARDAR EN SUPABASE
-    // Nota: He puesto nombres de canales comunes. Si en el log ves nombres distintos, los cambiaremos.
     const { error } = await supabase.from('telemetria_live').insert([{
-      timestamp: data.timestamp,
+      timestamp: measurements.timestamp,
       station_name: "Estación Tecnovex PMXG",
       location: "Patagonia, AR",
       wind_speed: (channels['Wind Speed'] || channels['viento'] || {}).value || null,
