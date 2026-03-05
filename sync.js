@@ -4,58 +4,65 @@ async function sync() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
   
-  // Ruta directa al dispositivo D223245
-  const url = 'https://or.ammonit.com/api/PMXG/D223245/';
+  // Esta ruta pide las últimas mediciones de la tabla de datos (los CSV ya procesados)
+  const url = 'https://or.ammonit.com/api/PMXG/D223245/data/';
 
-  console.log("Consultando datos del dispositivo directamente...");
+  console.log("Consultando la tabla de datos procesados...");
 
   try {
     const res = await fetch(url, {
       headers: { 'Authorization': `Token ${token}` }
     });
 
-    const device = await res.json();
-    
-    // Imprimimos las llaves para ver dónde están los datos de los CSV
-    console.log("--- ESTRUCTURA DETECTADA ---");
-    console.log("Llaves del JSON:", Object.keys(device));
-    
-    // Buscamos los datos en last_data (donde caen los CSV procesados)
-    const data = device.last_data;
+    if (!res.ok) {
+      console.log(`La ruta /data/ no respondió (Error ${res.status}). Probando ruta /values/...`);
+      // Plan B: Algunas versiones usan /values/ en lugar de /data/
+      const resAlt = await fetch('https://or.ammonit.com/api/PMXG/D223245/values/', {
+        headers: { 'Authorization': `Token ${token}` }
+      });
+      var data = await resAlt.json();
+    } else {
+      var data = await res.json();
+    }
 
-    if (!data) {
-      console.log("AVISO: AmmonitOR tiene los archivos pero aún no ha extraído los datos a la base de datos.");
-      console.log("Espera 5 minutos o verifica en AmmonitOR -> Data Tables si hay números.");
+    // 'data' ahora debería ser una LISTA de mediciones
+    const rows = Array.isArray(data) ? data : (data.results || []);
+
+    if (rows.length === 0) {
+      console.log("AVISO: La tabla de datos está vacía en AmmonitOR.");
+      console.log("Verifica en la web de AmmonitOR -> Data Tables si realmente hay números.");
       return;
     }
 
-    console.log("¡DATO ENCONTRADO!");
-    console.log("Fecha del dato:", data.timestamp);
-    const channels = data.channels || {};
-    console.log("Canales disponibles:", Object.keys(channels));
+    console.log(`¡Se encontraron ${rows.length} filas! Sincronizando...`);
 
-    // Función para extraer valores buscando por nombres comunes
-    const extraer = (tags) => {
-      const key = Object.keys(channels).find(k => tags.some(t => k.toLowerCase().includes(t.toLowerCase())));
+    // Función para buscar sensores
+    const getVal = (channels, tags) => {
+      const key = Object.keys(channels || {}).find(k => tags.some(t => k.toLowerCase().includes(t.toLowerCase())));
       return key ? channels[key].value : null;
     };
 
-    // 2. INSERTAR EN SUPABASE
-    const { error } = await supabase.from('telemetria_live').insert([{
-      timestamp: data.timestamp,
+    // Preparamos las filas para Supabase
+    const rowsToInsert = rows.map(row => ({
+      timestamp: row.timestamp,
       station_name: "Estación Tecnovex PMXG",
       location: "Patagonia, AR",
-      wind_speed: extraer(['wind speed', 'viento', 'ws', 'speed']),
-      wind_dir_value: extraer(['wind direction', 'dirección', 'wd', 'dir']),
-      wind_dir_label: extraer(['wind direction', 'wd'])?.label || "N/A",
-      temperature: extraer(['temperature', 'temp', 't']),
-      humidity: extraer(['humidity', 'hum', 'h']),
-      pressure: extraer(['pressure', 'presion', 'p']),
-      precipitation: extraer(['precipitation', 'lluvia', 'rain'])
-    }]);
+      wind_speed: getVal(row.channels, ['wind speed', 'viento', 'ws']),
+      temperature: getVal(row.channels, ['temperature', 'temp', 't']),
+      humidity: getVal(row.channels, ['humidity', 'hum', 'h']),
+      pressure: getVal(row.channels, ['pressure', 'presion', 'p']),
+      precipitation: getVal(row.channels, ['precipitation', 'lluvia', 'rain']),
+      wind_dir_label: row.channels?.['Wind Direction']?.label || "N/A"
+    }));
+
+    // Usamos 'upsert' para que si el dato ya existe, no se duplique
+    const { error } = await supabase
+      .from('telemetria_live')
+      .upsert(rowsToInsert, { onConflict: 'timestamp' });
 
     if (error) throw error;
-    console.log("¡ÉXITO! Supabase actualizado con datos del CSV.");
+
+    console.log("¡ÉXITO! Se han cargado los datos históricos y actuales en Supabase.");
 
   } catch (err) {
     console.error("ERROR:", err.message);
