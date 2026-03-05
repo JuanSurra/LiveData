@@ -1,75 +1,52 @@
 const { createClient } = require('@supabase/supabase-js');
 
 async function sync() {
+  // 1. Configurar conexión a Supabase
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
 
-  // RUTAS OFICIALES SEGÚN TU MANUAL DE PYTHON
-  // 1. Intentamos la ruta de "last-data" (la más probable para el Dashboard)
-  // 2. Intentamos la ruta de "device" (la que funcionó antes pero venía vacía)
-  const rutas = [
-    'https://or.ammonit.com/api/PMXG/D223245/last-data/',
-    'https://or.ammonit.com/api/PMXG/D223245/'
-  ];
+  // URL de AmmonitOR (Ajustada a tu proyecto y equipo)
+  const url = 'https://or.ammonit.com/api/PMXG/D223245/last-data/';
 
-  console.log("--- INICIANDO CAPTURA DE DATOS ---");
+  try {
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Token ${token}` }
+    });
+    const data = await res.json();
 
-  for (let url of rutas) {
-    console.log(`Probando ruta: ${url}`);
-    try {
-      const res = await fetch(url, {
-        headers: { 'Authorization': `Token ${token}` }
-      });
+    // 2. Mapeo de datos: Extraemos los valores de los canales de AmmonitOR
+    // Si el canal no existe, se guarda como null automáticamente
+    const channels = data.channels || {};
 
-      if (res.ok) {
-        const data = await res.json();
-        const channels = data.channels || (data.last_data ? data.last_data.channels : null);
+    // Este es el objeto JSON que se enviará a PostgreSQL
+    const insertData = {
+      timestamp: data.timestamp, // Fecha y hora de la lectura
+      station_name: "Estación Tecnovex PMXG",
+      location: "Patagonia, AR",
+      wind_speed: channels['Wind Speed']?.value ?? null,
+      wind_dir_value: channels['Wind Direction']?.value ?? null,
+      wind_dir_label: channels['Wind Direction']?.label ?? "N/A",
+      temperature: channels['Temperature']?.value ?? null,
+      humidity: channels['Humidity']?.value ?? null,
+      pressure: channels['Pressure']?.value ?? null,
+      precipitation: channels['Precipitation']?.value ?? null
+    };
 
-        if (channels && Object.keys(channels).length > 0) {
-          console.log("¡DATOS ENCONTRADOS! Sensores:", Object.keys(channels));
-          await guardarEnSupabase(supabase, data, channels);
-          return; // Éxito, salimos del bucle
-        } else {
-          console.log("Conectado, pero la lista de sensores sigue vacía.");
-        }
-      } else {
-        console.log(`Ruta no disponible (Error ${res.status})`);
-      }
-    } catch (e) {
-      console.log(`Error de conexión: ${e.message}`);
-    }
+    console.log("Enviando el siguiente JSON a PostgreSQL:", JSON.stringify(insertData, null, 2));
+
+    // 3. Inserción en la tabla telemetria_live
+    const { error } = await supabase
+      .from('telemetria_live')
+      .insert([insertData]);
+
+    if (error) throw error;
+
+    console.log("¡Sincronización exitosa! Dato guardado en la base de datos centralizada.");
+
+  } catch (err) {
+    console.error("Error en la sincronización:", err.message);
+    process.exit(1);
   }
-
-  console.log("--- NO SE PUDIERON OBTENER LOS VALORES ---");
-  console.log("Si el Dashboard negro tiene números pero aquí no salen, haz esto:");
-  console.log("En AmmonitOR web, ve a tu Proyecto -> 3rd party apps -> TecnovexAPI y asegúrate de que tenga permiso de 'READ LIVE DATA'.");
-}
-
-async function guardarEnSupabase(supabase, rawData, channels) {
-  // Buscador de valores flexible
-  const getVal = (tags) => {
-    for (let t of tags) {
-      const key = Object.keys(channels).find(k => k.toLowerCase().includes(t.toLowerCase()));
-      if (key) return channels[key].value;
-    }
-    return null;
-  };
-
-  const { error } = await supabase.from('telemetria_live').insert([{
-    timestamp: rawData.timestamp || new Date().toISOString(),
-    station_name: "Estación Tecnovex PMXG",
-    location: "Patagonia, AR",
-    wind_speed: getVal(['Wind Speed', 'viento', 'WS']),
-    wind_dir_value: getVal(['Wind Direction', 'dirección', 'WD']),
-    wind_dir_label: channels['Wind Direction']?.label || "N/A",
-    temperature: getVal(['Temperature', 'temp', 'T']),
-    humidity: getVal(['Humidity', 'hum', 'H']),
-    pressure: getVal(['Pressure', 'presion', 'P']),
-    precipitation: getVal(['Precipitation', 'lluvia', 'Rain'])
-  }]);
-
-  if (error) throw error;
-  console.log("¡Supabase actualizado con éxito!");
 }
 
 sync();
