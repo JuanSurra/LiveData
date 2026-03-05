@@ -44,4 +44,23 @@ async function sync() {
       station_name: "Estación Tecnovex PMXG",
       location: "Patagonia, AR",
       // AJUSTA ESTOS NOMBRES según lo que leas en tu Dashboard negro
-      wind_speed
+      wind_speed: extraer(['Wind Speed', 'viento', 'WS']), 
+      wind_dir_value: extraer(['Wind Direction', 'dirección', 'WD']),
+      wind_dir_label: channels['Wind Direction']?.label || "N/A",
+      temperature: extraer(['Temperature', 'temp', 'T']),
+      humidity: extraer(['Humidity', 'hum', 'H']),
+      pressure: extraer(['Pressure', 'presion', 'P']),
+      precipitation: extraer(['Precipitation', 'lluvia', 'Rain'])
+    }]);
+
+    if (error) throw error;
+    console.log("¡ÉXITO! Los datos del Dashboard ya están en tu Supabase.");
+
+  } catch (err) {
+    console.error("ERROR:");
+    console.error(err.message);
+    process.exit(1);
+  }
+}
+
+sync();
