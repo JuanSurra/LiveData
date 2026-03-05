@@ -4,57 +4,69 @@ async function sync() {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
   const token = process.env.AMMONITOR_TOKEN;
   
-  // URL CORRECTA SEGÚN EL MANUAL: /api/PROYECTO/SERIAL/
-  const url = 'https://or.ammonit.com/api/PMXG/D223245/';
+  // Esta es la URL que contiene el resumen de todos los equipos con su ULTIMO DATO
+  const url = 'https://or.ammonit.com/api/PMXG/loggers-list/';
 
-  console.log("Conectando a AmmonitOR...");
+  console.log("Buscando datos en el resumen del proyecto PMXG...");
 
   try {
     const res = await fetch(url, {
       headers: { 'Authorization': `Token ${token}` }
     });
 
-    // Verificamos si la respuesta es exitosa
-    if (!res.ok) {
-      throw new Error(`Error del servidor Ammonit: ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`Error ${res.status}: No se pudo acceder a la lista.`);
 
-    const data = await res.json();
+    const loggers = await res.json();
     
-    // En AmmonitOR, cuando el Live Data está activo, 
-    // las mediciones vienen dentro de 'last_data' o directamente en la raíz
-    const measurements = data.last_data || data;
-    const channels = measurements.channels || {};
+    // Buscamos tu equipo D223245 en la lista
+    const myLogger = loggers.find(l => l.serial === 'D223245');
 
-    if (Object.keys(channels).length === 0) {
-      console.log("AVISO: Conexión exitosa pero no hay canales de datos activos.");
+    if (!myLogger) {
+      console.log("No se encontró el equipo D223245. Equipos en este proyecto:", loggers.map(l => l.serial));
       return;
     }
 
-    // Mapeo de datos para PostgreSQL (Supabase)
-    // Usamos los nombres de canales que suelen venir por defecto
-    const insertData = {
-      timestamp: measurements.timestamp || new Date().toISOString(),
-      station_name: "Estación Tecnovex PMXG",
-      location: "Patagonia, AR",
-      wind_speed: channels['Wind Speed']?.value || channels['WS_1']?.value || null,
-      wind_dir_value: channels['Wind Direction']?.value || channels['WD_1']?.value || null,
-      wind_dir_label: channels['Wind Direction']?.label || "N/A",
-      temperature: channels['Temperature']?.value || channels['T_1']?.value || null,
-      humidity: channels['Humidity']?.value || channels['H_1']?.value || null,
-      pressure: channels['Pressure']?.value || channels['P_1']?.value || null,
-      precipitation: channels['Precipitation']?.value || channels['Rain']?.value || null
+    // Los datos reales están en 'last_data'
+    const data = myLogger.last_data;
+
+    if (!data || !data.channels) {
+      console.log("El equipo está en la lista pero no tiene 'last_data'.");
+      console.log("Asegúrate de que el Live Dashboard negro tenga números moviéndose ahora mismo.");
+      return;
+    }
+
+    console.log("¡DATOS ENCONTRADOS! Fecha:", data.timestamp);
+    const channels = data.channels;
+
+    // Función para buscar el valor sin importar si el nombre tiene espacios o mayúsculas
+    const getVal = (tags) => {
+      const key = Object.keys(channels).find(k => tags.some(t => k.toLowerCase().includes(t.toLowerCase())));
+      return key ? channels[key].value : null;
     };
 
-    console.log("Guardando en Supabase...");
+    // 2. PREPARAR EL JSON PARA POSTGRESQL (CUMPLIENDO EL PDF)
+    const insertData = {
+      timestamp: data.timestamp,
+      station_name: "Estación Tecnovex PMXG",
+      location: "Patagonia, AR",
+      wind_speed: getVal(['wind speed', 'viento', 'ws']),
+      wind_dir_value: getVal(['wind direction', 'dirección', 'wd']),
+      wind_dir_label: getVal(['wind direction', 'wd'])?.label || "N/A",
+      temperature: getVal(['temperature', 'temp', 't']),
+      humidity: getVal(['humidity', 'hum', 'h']),
+      pressure: getVal(['pressure', 'presion', 'p']),
+      precipitation: getVal(['precipitation', 'lluvia', 'rain'])
+    };
+
+    // 3. ENVIAR A SUPABASE
     const { error } = await supabase.from('telemetria_live').insert([insertData]);
 
     if (error) throw error;
 
-    console.log("¡Sincronización exitosa! Datos guardados.");
+    console.log("¡ÉXITO TOTAL! Los datos ya están en Supabase.");
 
   } catch (err) {
-    console.error("ERROR CRÍTICO:");
+    console.error("ERROR:");
     console.error(err.message);
     process.exit(1);
   }
